@@ -1,9 +1,6 @@
 __doc__ = """
 Website: 
-    https://bitbucket.org/qi/webscraping/
-
-License: 
-    LGPL
+    https://github.com/kunzhipeng/webscraping
 """
 
 if __name__ == '__main__':
