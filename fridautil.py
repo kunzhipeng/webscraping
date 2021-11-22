@@ -219,45 +219,34 @@ class FridaClient:
         @func_timeout.func_set_timeout(timeout)
         def safecallrpc(fc, method, args):
             result = None
-            num_failed = 0
-            while True:
+            try:
                 try:
-                    if not fc.script:
-                        fc.inject()
-                        num_failed = 0
-                    try:
-                        rpcfun = getattr(fc.script.exports, method)
-                    except AttributeError:
-                        common.logger.error('No such frida exports rpc method "{}".'.format(method))
-                        return
-                    else:
-                        result = rpcfun(*args) if args else rpcfun()
-                except Exception, e:
-                    error = common.to_unicode(str(e))
-                    common.logger.error(u'Failed to call rcp "{}": {}.'.format(method, error))
-                    if u'script is destroyed' in error:
-                        common.logger.error('"script is destroyed", will re-do code injection.')
-                        fc.inject()
-                        num_failed = 0
-                    else:
-                        num_failed += 1
-                    time.sleep(1)
+                    rpcfun = getattr(fc.script.exports, method)
+                except AttributeError:
+                    common.logger.error('No such frida exports rpc method "{}".'.format(method))
                 else:
-                    num_failed = 0
-                    break
-                if num_failed >= 3:
-                    common.logger.error('Too many times fails for rpc call "{}", will re-do code injection.'.format(method))
-                    fc.inject()
-                    num_failed = 0
+                    result = rpcfun(*args) if args else rpcfun()
+            except Exception, e:
+                error = common.to_unicode(e)
+                common.logger.error(u'Failed to call rcp "{}": {}.'.format(method, error))
+                if u'script is destroyed' in error:
+                    common.logger.error('"script is destroyed", will re-do code injection.')
+                    fc.script = None
             return result
         
         retries = 0
         while retries < num_retries:
-            try:
-                result = safecallrpc(self, method, args)
-            except func_timeout.exceptions.FunctionTimedOut:
-                common.logger.error('Timedout to call rcp "{}", will re-do code injection.'.format(method))
-                self.inject()
-                retries += 1
-            else:
-                return result
+            if not self.script:
+                try:
+                    self.inject()
+                except Exception, e:
+                    common.logger.error('Failed to do code injection: {}'.format(str(e)))
+            if self.script:
+                try:
+                    result = safecallrpc(self, method, args)
+                except func_timeout.exceptions.FunctionTimedOut:
+                    common.logger.error('Timedouted to call rcp "{}", will re-do code injection.'.format(method))
+                    self.script = None
+                else:
+                    return result
+            retries += 1
