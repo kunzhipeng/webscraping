@@ -9,12 +9,20 @@ import datetime
 import sqlite3
 import zlib
 import md5
+import time
 try:
     import cPickle as pickle
 except ImportError:
     import pickle
+try:
+    import pymongo
+    import bson.binary
+except ImportError:
+    pymongo = None
 
 DEFAULT_TIMEOUT = 10000
+# between 1-9 (in my test levels 1-3 produced a 1300kb file in ~7 seconds while 4-9 a 288kb file in ~9 seconds)
+COMPRESS_LEVEL = 6
 
 
 
@@ -24,8 +32,6 @@ class PersistentDict:
 
     filename: 
         where to store sqlite database. Uses in memory by default.
-    compress_level: 
-        between 1-9 (in my test levels 1-3 produced a 1300kb file in ~7 seconds while 4-9 a 288kb file in ~9 seconds)
     expires: 
         a timedelta object of how old data can be before expires. By default is set to None to disable.
     timeout: 
@@ -60,12 +66,12 @@ class PersistentDict:
     False
     >>> os.remove(filename)
     """
-    def __init__(self, filename='cache.db', compress_level=6, expires=None, timeout=DEFAULT_TIMEOUT, isolation_level=None, num_caches=1, use_md5hash=False):
+    def __init__(self, filename='cache.db', expires=None, timeout=DEFAULT_TIMEOUT, isolation_level=None, num_caches=1, use_md5hash=False):
         """initialize a new PersistentDict with the specified database file.
         """
         self.filename = filename
-        self.compress_level, self.expires, self.timeout, self.isolation_level, self.num_caches, self.use_md5hash = \
-            compress_level, expires, timeout, isolation_level, num_caches, use_md5hash
+        self.expires, self.timeout, self.isolation_level, self.num_caches, self.use_md5hash = \
+            expires, timeout, isolation_level, num_caches, use_md5hash
         for i in range(num_caches):
             conn = self.get_connection(i)
             sql = """
@@ -84,7 +90,7 @@ class PersistentDict:
     def __copy__(self):
         """make a copy of current cache settings
         """
-        return PersistentDict(filename=self.filename, compress_level=self.compress_level, expires=self.expires, 
+        return PersistentDict(filename=self.filename, expires=self.expires, 
                               timeout=self.timeout, isolation_level=self.isolation_level, num_caches=self.num_caches)
 
 
@@ -153,7 +159,8 @@ class PersistentDict:
                 if not self.use_md5hash:
                     conn_i = hash(key) % self.num_caches
                 else:
-                    conn_i = ord(md5.md5(key).hexdigest()[0]) % self.num_caches
+                    hashvalue = md5.md5(key).hexdigest()
+                    conn_i = (ord(hashvalue[0]) + ord(hashvalue[-1])) % self.num_caches
             filename = '%s.%d' % (self.filename, conn_i)
         conn = sqlite3.connect(filename, timeout=self.timeout, isolation_level=self.isolation_level, detect_types=sqlite3.PARSE_DECLTYPES|sqlite3.PARSE_COLNAMES)
         conn.text_factory = lambda x: unicode(x, 'utf-8', 'replace')
@@ -163,7 +170,7 @@ class PersistentDict:
     def serialize(self, value):
         """convert object to a compressed pickled string to save in the db
         """
-        return sqlite3.Binary(zlib.compress(pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL), self.compress_level))
+        return sqlite3.Binary(zlib.compress(pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL), COMPRESS_LEVEL))
     
     def deserialize(self, value):
         """convert compressed pickled string from database back into an object
@@ -229,6 +236,177 @@ class PersistentDict:
             if override or key not in self:
                 self[key] = db[key]
 
+class MongoCache:
+    """Use MongoDB as backend to store cache data
+    database_name, collection_name, host, port, username, password:
+        MogoDB connection settings
+    expires: 
+        a timedelta object of how old data can be before expires. By default is set to None to disable.
+    """
+    
+    def __init__(self, database_name, collection_name, host='127.0.0.1', port=27017, username=None, password=None, expires=None):
+        self.host, self.port, self.username, self.password, self.database_name, self.collection_name = host, port, username, password, database_name, collection_name
+        self.expires = expires
+        self.conn = None
+        
+    def get_connection(self):
+        """Connect to MongoDB
+        """
+        if not self.conn:
+            while True:
+                try:
+                    client = pymongo.MongoClient(host=self.host, port=self.port)
+                    db = client[self.database_name]
+                    if self.username:
+                        db.authenticate(name=self.username, password=self.password)
+                    self.conn = db[self.collection_name]
+                except Exception, e:
+                    print 'Failed to connect to MongoDB: {}'.format(str(e))
+                    time.sleep(1)
+                else:
+                    break
+        return self.conn
+    
+    def safekey(self, key):
+        """return a safekey
+        """
+        if len(key) < 1024:
+            return key
+        else:
+            return md5.md5(key).hexdigest
+    
+    def is_fresh(self, t):
+        """returns whether this datetime has expired
+        """
+        return self.expires is None or datetime.datetime.now() - t < self.expires
+    
+    def safe_findone(self, condition, *args, **kwargs):
+        """Do find_one() until success, avoid mongodb exception, e.g. connection lost.
+        """
+        while True:
+            try:
+                conn = self.get_connection()
+                doc = conn.find_one(condition, *args, **kwargs)
+            except Exception, e:
+                print 'Failed to execute MongoDB find_one command: {}'.format(str(e))
+                time.sleep(1)
+            else:
+                return doc
+    
+
+    def __contains__(self, key):
+        """check the database to see if a key exists
+        """
+        doc = self.safe_findone({'_id': self.safekey(key)}, {'updated': True})
+        return doc and self.is_fresh(doc['updated'])
+    
+    def __iter__(self):
+        """iterate each key in the database
+        """
+        conn = self.get_connection()        
+        for doc in conn.find({}, {'_id': True}):
+            yield doc['_id']   
+    
+    def __getitem__(self, key):
+        """return the value of the specified key or raise KeyError if not found
+        """
+        doc = self.safe_findone({'_id': self.safekey(key)})
+        if doc:
+            if self.is_fresh(doc['updated']):
+                return self.deserialize(doc['value'])
+            else:
+                raise KeyError("Key `%s' is stale" % key)
+        else:
+            raise KeyError("Key `%s' does not exist" % key)
+
+    def __delitem__(self, key):
+        """remove the specifed value from the database
+        """
+        conn = self.get_connection()
+        while True:
+            try:
+                conn.remove({'_id': self.safekey(key)}) 
+            except Exception, e:
+                print 'Failed to execute MongoDB remove command: {}'.format(str(e))
+                time.sleep(1)
+            else:
+                return True
+        
+        
+    def __setitem__(self, key, value):
+        """set the value of the specified key
+        """
+        updated = datetime.datetime.now()
+        conn = self.get_connection()
+        key_safe = self.safekey(key)
+        doc = {'_id': key_safe, 'value': self.serialize(value), 'meta': None, 'updated': updated}
+        while True:
+            try:
+                conn.update({'_id': key_safe}, doc, upsert=True)
+            except Exception, e:
+                print 'Failed to execute MongoDB update command: {}'.format(str(e))
+                time.sleep(1)
+            else:
+                return True
+    
+
+    def get(self, key, default=None):
+        """Get data at key and return default if not defined
+        """
+        data = default
+        if key:
+            doc = self.safe_findone({'_id': self.safekey(key)})
+            if doc:
+                data = dict(
+                    value=self.deserialize(doc['value']),
+                    meta=doc['meta'],
+                    updated=doc['updated']
+                )
+        return data
+    
+    def meta(self, key, value=None):
+        """Get / set meta for this value
+
+        if value is passed then set the meta attribute for this key
+        if not then get the existing meta data for this key
+        """
+        if value is None:
+            # want to get meta
+            doc = self.safe_findone({'_id': self.safekey(key)}, {'meta': True, 'updated': True})
+            if doc:
+                return doc['meta']
+            else:
+                raise KeyError("Key `%s' does not exist" % key)
+        else:
+            # want to set meta
+            conn = self.get_connection()
+            while True:
+                try:
+                    conn.update({'_id': self.safekey(key)}, {'$set': {'meta': value}}, upsert=True)
+                except Exception, e:
+                    print 'Failed to execute MongoDB update command: {}'.format(str(e))
+                    time.sleep(1)
+                else:
+                    return True                    
+            
+            
+    def clear(self):
+        """Clear all cached data
+        """
+        conn = self.get_connection()
+        conn.remove({})
+    
+    def serialize(self, value):
+        """convert object to a compressed pickled string to save in the db
+        """
+        return bson.binary.Binary(zlib.compress(pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL), COMPRESS_LEVEL))
+    
+    def deserialize(self, value):
+        """convert compressed pickled string from database back into an object
+        """
+        if value:
+            return pickle.loads(zlib.decompress(value))
+    
 
 
 if __name__ == '__main__':
