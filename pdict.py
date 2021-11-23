@@ -408,42 +408,95 @@ class MongoCache:
             return pickle.loads(zlib.decompress(value))
     
 
+class MongoQueue:
+    """MongoDB based queue
+    """
+    def __init__(self, database_name, collection_name, host='127.0.0.1', port=27017, username=None, password=None):
+        self.host, self.port, self.username, self.password, self.database_name, self.collection_name = host, port, username, password, database_name, collection_name
+        self.conn = None
+        
+    def get_connection(self):
+        """Connect to MongoDB
+        """
+        if not self.conn:
+            while True:
+                try:
+                    client = pymongo.MongoClient(host=self.host, port=self.port)
+                    db = client[self.database_name]
+                    if self.username:
+                        db.authenticate(name=self.username, password=self.password)
+                    self.conn = db[self.collection_name]
+                    self.conn.ensure_index([('priority', pymongo.DESCENDING)])                    
+                except Exception, e:
+                    print 'Failed to connect to MongoDB: {}'.format(str(e))
+                    time.sleep(1)
+                else:
+                    break
+        return self.conn
 
-if __name__ == '__main__':
-    import tempfile
-    import webbrowser
-    from optparse import OptionParser
-    parser = OptionParser(usage='usage: %prog [options] <cache file>')
-    parser.add_option('-k', '--key', dest='key', help='The key to use')
-    parser.add_option('-v', '--value', dest='value', help='The value to store')
-    parser.add_option('-b', '--browser', action='store_true', dest='browser', default=False, help='View content of this key in a web browser')
-    parser.add_option('-c', '--clear', action='store_true', dest='clear', default=False, help='Clear all data for this cache')
-    options, args = parser.parse_args()
-    if not args:
-        parser.error('Must specify the cache file')
-    cache = PersistentDict(args[0])
 
-    if options.value:
-        # store thie value 
-        if options.key:
-            cache[options.key] = options.value
-        else:
-            parser.error('Must specify the key')
-    elif options.browser:
-        if options.key:
-            value = cache[options.key]
-            filename = tempfile.NamedTemporaryFile().name
-            fp = open(filename, 'w')
-            fp.write(value)
-            fp.flush()
-            webbrowser.open(filename)
-        else:
-            parser.error('Must specify the key')
-    elif options.key:
-        print cache[options.key]
-    elif options.clear:
-        if raw_input('Really? Clear the cache? (y/n) ') == 'y':
-            cache.clear()
-            print 'cleared'
-    else:
-        parser.error('No options selected')
+    def size(self):
+        """Total size of the queue
+        """
+        conn = self.get_connection()
+        while True:
+            try:
+                queue_size = conn.count() 
+            except Exception, e:
+                print 'Failed to execute MongoDB count command: {}'.format(str(e))
+                time.sleep(1)
+            else:
+                return queue_size
+            
+    def __len__(self):
+        """Total size of the queue
+        """
+        return self.size()
+    
+    
+    def clear(self):
+        """Clear the queue.
+        """
+        conn = self.get_connection()
+        while True:
+            try:
+                conn.remove({})
+            except Exception, e:
+                print 'Failed to execute MongoDB count remove: {}'.format(str(e))
+                time.sleep(1)
+            else:
+                return True
+            
+    def append(self, task, priority=0):
+        """Place a task into the queue
+        """
+        doc = {}
+        doc['priority'] = priority
+        doc['task'] = task
+        doc['updated'] = datetime.datetime.now()
+        conn = self.get_connection()
+        while True:
+            try:
+                conn.insert(doc)
+            except Exception, e:
+                print 'Failed to execute MongoDB update command: {}'.format(str(e))
+                time.sleep(1)
+            else:
+                return True        
+    
+    def pop(self):
+        """Get a task from the queue
+        """
+        conn = self.get_connection()
+        while True:
+            try:
+                # https://docs.mongodb.com/manual/reference/method/db.collection.findAndModify/
+                doc = conn.find_and_modify(query={}, sort=[('priority', pymongo.DESCENDING)], remove=True, limit=1)
+            except Exception, e:
+                print 'Failed to execute MongoDB find_and_modify command: {}'.format(str(e))
+                time.sleep(1)
+            else:
+                if doc:
+                    return doc['task']
+                else:
+                    raise IndexError('No more task.')
