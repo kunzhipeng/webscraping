@@ -3,8 +3,6 @@ __doc__ = 'Helper methods to download and crawl web content using threads'
 
 import os
 import re
-import sys
-import copy
 import collections 
 import random
 import urllib
@@ -14,23 +12,15 @@ import urlparse
 import StringIO
 import time
 import datetime
-import subprocess
 import socket
 import gzip
-import thread
 import threading
 import contextlib
-import tempfile
-import traceback
 import requests
 try:
     import hashlib
 except ImportError:
     import md5 as hashlib
-try:
-    import cPickle as pickle
-except:
-    import pickle
 try:
     import json
 except ImportError:

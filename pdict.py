@@ -339,7 +339,7 @@ class MongoCache:
         updated = datetime.datetime.now()
         conn = self.get_connection()
         key_safe = self.safekey(key)
-        doc = {'_id': key_safe, 'value': self.serialize(value), 'meta': None, 'updated': updated}
+        doc = {'_id': key_safe, 'value': self.serialize(value) if not value is None else None, 'meta': None, 'updated': updated}
         while True:
             try:
                 conn.update({'_id': key_safe}, doc, upsert=True)
