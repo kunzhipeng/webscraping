@@ -146,12 +146,24 @@ def inject_script(package, scriptcode, serialno=None, on_message_fun=None, resta
             session = device.attach(pid)
         else:
             # attach model
-            top_app = device.get_frontmost_application()
-            if not top_app or top_app.identifier != package:
+            pid = None
+            for app in device.enumerate_applications(identifiers=[package]):
+                if app.identifier == package and app.pid > 0:
+                    pid = app.pid
+                    break
+            if not pid:
                 common.logger.info(u'App {} not started, will start it.'.format(package))
                 common.command(adb_cmd_prefix + ' shell "su -c \'monkey -p {} 1\'"'.format(package))
                 time.sleep(3)
-            session = device.attach(package)
+            for app in device.enumerate_applications(identifiers=[package]):
+                if app.identifier == package and app.pid > 0:
+                    pid = app.pid
+                    break
+            if pid:
+                common.logger.info(u'Found process of {}, pid is {}.'.format(package, pid))
+                session = device.attach(pid)
+            else:
+                session = device.attach(package)
     script = session.create_script(scriptcode)
     if on_message_fun:
         script.on('message', on_message_fun)
