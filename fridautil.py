@@ -4,6 +4,7 @@ __doc__ = 'Helper methods to do frida Adnroid DBI'
 import os
 import time
 import re
+import threading
 # https://pypi.org/project/frida/
 import frida
 import func_timeout
@@ -71,8 +72,13 @@ def start_frida_server(serialno=None, restart=False, forward_port=True, frida_pa
     cmd_ret = common.command(adb_cmd_prefix + ' shell ps')
     if os.path.basename(frida_path) not in cmd_ret:
         common.logger.info(u'The frida server is not running, will start it...')
-        common.command(adb_cmd_prefix + ' shell "su -c \'chmod 777 {}\'"'.format(frida_path))
-        common.command(adb_cmd_prefix + ' shell "su -c \'nohup {} -l 0.0.0.0 > /sdcard/frida-server.log 2>&1 &\'"'.format(frida_path))
+        def run_frida_server():
+            common.command(adb_cmd_prefix + ' shell "su -c \'chmod 777 {}\'"'.format(frida_path))
+            os.system(adb_cmd_prefix + ' shell "su -c \'.{} -l 0.0.0.0\'"'.format(frida_path))
+        thread = threading.Thread(target=run_frida_server)
+        thread.setDaemon(True)
+        thread.start()
+        time.sleep(2)
         if os.path.basename(frida_path) in common.command(adb_cmd_prefix + ' shell ps'):
             common.logger.info(u'Frida server is runing.')
         else:
@@ -140,12 +146,8 @@ def inject_script(package, scriptcode, serialno=None, on_message_fun=None, resta
             session = device.attach(pid)
         else:
             # attach model
-            app_started = False
-            for process in device.enumerate_processes():
-                if process.name == package:
-                    app_started = True
-                    break
-            if not app_started:
+            top_app = device.get_frontmost_application()
+            if not top_app or top_app.identifier != package:
                 common.logger.info(u'App {} not started, will start it.'.format(package))
                 common.command(adb_cmd_prefix + ' shell "su -c \'monkey -p {} 1\'"'.format(package))
                 time.sleep(3)
