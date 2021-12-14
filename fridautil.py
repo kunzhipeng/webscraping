@@ -147,7 +147,7 @@ def inject_script(package, scriptcode, serialno=None, on_message_fun=None, resta
         else:
             # attach model
             pid = None
-            for app in device.enumerate_applications(identifiers=[package]):
+            for app in device.enumerate_applications():
                 if app.identifier == package and app.pid > 0:
                     pid = app.pid
                     break
@@ -155,7 +155,7 @@ def inject_script(package, scriptcode, serialno=None, on_message_fun=None, resta
                 common.logger.info(u'App {} not started, will start it.'.format(package))
                 common.command(adb_cmd_prefix + ' shell "su -c \'monkey -p {} 1\'"'.format(package))
                 time.sleep(3)
-            for app in device.enumerate_applications(identifiers=[package]):
+            for app in device.enumerate_applications():
                 if app.identifier == package and app.pid > 0:
                     pid = app.pid
                     break
