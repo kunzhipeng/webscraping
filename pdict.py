@@ -273,7 +273,7 @@ class MongoCache:
         if len(key) < 1024:
             return key
         else:
-            return md5.md5(key).hexdigest
+            return md5.md5(key).hexdigest()
     
     def is_fresh(self, t):
         """returns whether this datetime has expired
