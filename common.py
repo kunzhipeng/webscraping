@@ -11,15 +11,12 @@ import glob
 import string
 import urllib
 import string
-import urllib2
 import urlparse
 import cookielib
-import itertools
 import htmlentitydefs
 import logging
 import logging.handlers
 import threading
-import collections
 import platform
 import subprocess
 import tempfile
@@ -32,11 +29,6 @@ try:
     import json
 except ImportError:
     import simplejson as json
-try:
-    import psutil
-except ImportError:
-    print 'warning: psutil is missing'
-    psutil = None
 
 
 class WebScrapingError(Exception):
@@ -729,6 +721,11 @@ def command(cmd, cwd=None, timeout=15):
     timeout:
         max seconds to wait for;
     """
+    try:
+        import psutil
+    except ImportError:
+        print 'warning: psutil is missing'
+        psutil = None    
     with tempfile.TemporaryFile() as temp_output:
         p = subprocess.Popen(cmd, cwd=cwd, stderr=temp_output, stdout=temp_output, shell=(True if isinstance(cmd, basestring) else False), preexec_fn=os.setsid if is_linux() else None)
         t_beginning = time.time()

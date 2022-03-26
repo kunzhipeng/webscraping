@@ -21,11 +21,6 @@ try:
     import hashlib
 except ImportError:
     import md5 as hashlib
-try:
-    import json
-except ImportError:
-    import simplejson as json
-
 import adt
 import alg
 import common
@@ -37,28 +32,6 @@ except ImportError:
     pdict = None
 
 SLEEP_TIME = 0.1 # how long to sleep when waiting for network activity
-DEFAULT_PRIORITY = 1 # default queue priority
-
-
-
-class ProxyPerformance:
-    """Track performance of proxies
-    If 10 errors in a row that other proxies could handle then need to remove
-    """
-    def __init__(self):
-        self.proxy_errors = collections.defaultdict(int)
-
-    def success(self, proxy):
-        """Successful download - so clear error count
-        """
-        self.proxy_errors[proxy] = 0
-
-    def error(self, proxy):
-        """Add to error count and returns number of consecutive errors for this proxy
-        """
-        if proxy:
-            self.proxy_errors[proxy] += 1
-        return self.proxy_errors[proxy]
 
 
 
@@ -85,12 +58,10 @@ class Download:
         a filename to read proxies from
     proxy_get_fun:
         a method to fetch a proxy dynamically
-    max_proxy_errors:
-        the maximum number of consecutive errors allowed per proxy before discarding
-        an error is only counted if another proxy is able to successfully download the URL
-        set to None to disable
     proxies:
         a list of proxies to cycle through when downloading content
+    proxy:
+        a proxy to be used for downloading
     opener:
         an optional opener to use instead of using urllib2 directly
     headers:
@@ -113,14 +84,9 @@ class Download:
     default:
         what to return when no content can be downloaded
     pattern:
-        a regular expression that the downloaded HTML has to match to be considered a valid download
+        a regular expression or function for checking the downloaded HTML whether valid or not
     acceptable_errors:
         a list contains all acceptable HTTP codes, don't try downloading for them e.g. no need to retry for 404 error
-    throttle_by:
-        Different websites may use different methods to restrict a visitors' rate. This value can be:
-        0 - To throttle only by proxy, the default value;
-        1 - To throttle only by session(cookie);
-        2 - To throttle by both of proxy and session(cookie);
     keep_ip_ua:
         If it's True, one proxy IP will keep using the same User-agent, otherwise will use a random User-agent for each request.
     logger:
@@ -132,10 +98,10 @@ class Download:
     """
 
     def __init__(self, cache=None, cache_file=None, read_cache=True, write_cache=True, use_network=True, 
-            user_agent=None, timeout=30, delay=5, proxies=None, proxy_file=None, proxy_get_fun=None, max_proxy_errors=5,
+            user_agent=None, timeout=30, delay=5, proxy=None, proxies=None, proxy_file=None, proxy_get_fun=None,
             opener=None, headers=None, data=None, num_retries=0, num_redirects=0, num_caches=1,
             force_html=False, force_ascii=False, max_size=None, default='', pattern=None, acceptable_errors=None, 
-            throttle_by=0, keep_ip_ua=True, logger=None, use_requests=False, keep_session=False, **kwargs):
+            keep_ip_ua=True, logger=None, use_requests=False, keep_session=False, **kwargs):
         if isinstance(timeout, tuple):
             connect_timeout, read_timeout = timeout
         else:
@@ -145,8 +111,7 @@ class Download:
         self.logger = logger or common.logger
         need_cache = read_cache or write_cache
         if pdict and need_cache:
-            cache_file = cache_file or settings.cache_file
-            self.cache = cache or pdict.PersistentDict(cache_file, num_caches=num_caches)
+            self.cache = cache or pdict.PersistentDict(cache_file or settings.cache_file, num_caches=num_caches)
         else:
             self.cache = None
             if need_cache:
@@ -160,10 +125,9 @@ class Download:
             write_cache = write_cache,
             use_network = use_network,
             delay = delay,
-            proxies = (common.read_list(proxy_file) if proxy_file else []) or proxies or [],
+            proxies = (common.read_list(proxy_file) if proxy_file else []) or proxies or ([proxy] if proxy else []),
             proxy_file = proxy_file,
             proxy_get_fun = proxy_get_fun,
-            max_proxy_errors = max_proxy_errors,
             user_agent = user_agent,
             opener = opener,
             headers = headers,
@@ -184,11 +148,8 @@ class Download:
             read_timeout=read_timeout
         )
         self.last_load_time = self.last_mtime = time.time()
-        self.num_downloads = self.num_errors = 0
-        self.throttle_by = throttle_by
 
 
-    proxy_performance = ProxyPerformance()
     def get(self, url, **kwargs):
         """Download this URL and return the HTML. 
         By default HTML is cached so only have to download once.
@@ -206,7 +167,6 @@ class Download:
         self.downloading_error = None # keep downloading error
         self.error_content = None # keep error content
         self.invalid_content = None # keep invalid content
-        self.num_downloads = self.num_errors = 0 # track the number of downloads made
                 
         # update settings with any local overrides
         settings = adt.Bag(self.settings)
@@ -222,7 +182,7 @@ class Download:
         if self.cache and settings.read_cache:
             try:
                 html = self.cache[key]
-                if self.invalid_response(html, settings.pattern):
+                if not self.valid_response(html, settings.pattern):
                     self.invalid_content = html
                     # invalid result from download
                     html = None
@@ -241,7 +201,6 @@ class Download:
             return settings.default 
 
         html = None
-        failed_proxies = set() # record which proxies failed to download for this URL
         # attempt downloading content at URL
         while settings.num_retries >= 0 and html is None:
             settings.num_retries -= 1
@@ -255,23 +214,8 @@ class Download:
                 self.proxy = self.get_proxy(settings.proxies)
             # crawl slowly for each domain to reduce risk of being blocked
             self.throttle(url, headers=settings.headers, delay=settings.delay, proxy=self.proxy) 
-            html = self.fetch(url, headers=settings.headers, data=settings.data, proxy=self.proxy, user_agent=settings.user_agent, opener=settings.opener, pattern=settings.pattern, max_size=settings.max_size, keep_session=settings.keep_session, connect_timeout=settings.connect_timeout, read_timeout=settings.read_timeout)
-
-            if html:
-                # successfully downloaded
-                self.num_downloads += 1
-                if settings.max_proxy_errors is not None:
-                    Download.proxy_performance.success(self.proxy)
-                    # record which proxies failed for this download
-                    for proxy in failed_proxies:
-                        if Download.proxy_performance.error(self.proxy) > settings.max_proxy_errors:
-                            # this proxy has had too many errors so remove
-                            self.logger.warning('Removing unstable proxy from list after %d consecutive errors: %s' % (settings.max_proxy_errors, self.proxy))
-                            settings.proxies.remove(self.proxy)
-            else:
-                # download failed - try again
-                self.num_errors += 1
-                failed_proxies.add(self.proxy)
+            html = self.fetch(url, headers=settings.headers, data=settings.data, proxy=self.proxy, user_agent=settings.user_agent, opener=settings.opener, pattern=settings.pattern, max_size=settings.max_size, 
+                              keep_session=settings.keep_session, connect_timeout=settings.connect_timeout, read_timeout=settings.read_timeout, acceptable_errors=settings.acceptable_errors)
 
 
         if html:
@@ -393,13 +337,21 @@ class Download:
         return user_agent
 
 
-    def invalid_response(self, html, pattern):
-        """Return whether the response contains a regex error pattern 
+    def valid_response(self, html, pattern):
+        """Return whether the response matches the pattern
         """
-        return html is None or (pattern and not re.compile(pattern, re.DOTALL | re.IGNORECASE).search(html))
+        if html is None:
+            return False
+        if not pattern:
+            return True
+        elif callable(pattern):
+            # Is a function
+            return pattern(html)
+        else:
+            return re.compile(pattern, re.DOTALL|re.IGNORECASE).search(html)
 
 
-    def fetch(self, url, headers=None, data=None, proxy=None, user_agent=None, opener=None, pattern=None, max_size=None, keep_session=False, connect_timeout=30, read_timeout=30):
+    def fetch(self, url, headers=None, data=None, proxy=None, user_agent=None, opener=None, pattern=None, max_size=None, keep_session=False, connect_timeout=30, read_timeout=30, acceptable_errors=None):
         """Simply download the url and return the content
         """
         if self.settings['use_requests'] == False:
@@ -457,7 +409,7 @@ class Download:
                         # data came back gzip-compressed so decompress it          
                         content = gzip.GzipFile(fileobj=StringIO.StringIO(content)).read()
                     self.final_url = response.url # store where redirected to
-                    if self.invalid_response(content, pattern):
+                    if not self.valid_response(content, pattern):
                         # invalid result from download
                         self.invalid_content = content
                         content = None
@@ -475,7 +427,7 @@ class Download:
                         self.error_content = ''
                 # so many kinds of errors are possible here so just catch them all
                 self.logger.warning('Download error: %s %s %s' % (url, e, proxy))
-                if self.settings.acceptable_errors and self.response_code in self.settings.acceptable_errors:
+                if acceptable_errors and self.response_code in acceptable_errors:
                     content, self.final_url = self.settings.default, url
                 else:
                     content, self.final_url = None, url
@@ -531,7 +483,7 @@ class Download:
                     self.response_code = str(resp.status_code)
                     self.error_content = resp.content
                 self.logger.warning('Download error with requests: %s %s %s' % (url, error, proxy))
-                if self.settings.acceptable_errors and self.response_code in self.settings.acceptable_errors:
+                if acceptable_errors and self.response_code in acceptable_errors:
                     content, self.final_url = self.settings.default, url
                 else:
                     content, self.final_url = None, url
@@ -543,7 +495,7 @@ class Download:
                     self.final_url = resp.history[-1].headers.get('Location', resp.history[-1].url)
                 else:
                     self.final_url = resp.url
-                if self.invalid_response(content, pattern):
+                if not self.valid_response(content, pattern):
                     # invalid result from download
                     self.invalid_content = content
                     content = None
@@ -569,19 +521,11 @@ class Download:
         """
         if delay > 0:
             # Use a random delay value
-            delay = delay * (1 + variance * (random.random() - 0.5))            
-            if self.throttle_by == 0 or self.throttle_by == 2:
-                # To throttle by proxy
-                key = str(proxy) + ':' + common.get_domain(url)
-                self.__do_throttle(key, delay)
-            if self.throttle_by == 1 or self.throttle_by == 2:
-                # To throttle by session(cookie)
-                if headers:
-                    cookie = headers.get('cookie') or headers.get('Cookie')
-                else:
-                    cookie = None
-                key = str(cookie) + ':' + common.get_domain(url)
-                self.__do_throttle(key, delay)
+            delay = delay * (1 + variance * (random.random() - 0.5))
+            # To throttle by proxy
+            key = str(proxy) + ':' + common.get_domain(url)
+            self.__do_throttle(key, delay)
+         
                 
     def __do_throttle(self, key, delay):
         """Delay for key specified
@@ -693,24 +637,15 @@ def threaded_get(url=None, urls=None, url_iter=None, num_threads=10, dl=None, cb
                     try:
                         # use callback to process downloaded HTML
                         result = cb(D, url, html)
-
                     except StopCrawl:
                         common.logger.info('Stopping crawl signal')
-                        running = False
-
                     except Exception:
                         # catch any callback error to avoid losing thread
                         common.logger.exception('\nIn callback for: ' + str(url))
-
                     else:
                         # add these URL's to crawl queue
                         for link in result or []:
                             download_queue.append(urlparse.urljoin(url, link))
-                                        
-                # update the crawler state
-                # no download or error so must have read from cache
-                num_caches = 0 if D.num_downloads or D.num_errors else 1
-                state.update(num_downloads=D.num_downloads, num_errors=D.num_errors, num_caches=num_caches, queue_size=len(download_queue))
 
     download_queue = collections.deque()
     if urls:
@@ -718,10 +653,6 @@ def threaded_get(url=None, urls=None, url_iter=None, num_threads=10, dl=None, cb
     if url:
         download_queue.append(url)
     common.logger.debug('Start new crawl')
-
-    # initiate the state file with the number of URL's already in the queue
-    state = State()
-    state.update(queue_size=len(download_queue))
 
     # wait for all download threads to finish
     threads = []
@@ -736,84 +667,6 @@ def threaded_get(url=None, urls=None, url_iter=None, num_threads=10, dl=None, cb
             thread.start()
             threads.append(thread)
         time.sleep(SLEEP_TIME)
-    # save the final state after threads finish
-    state.save()
-
-
-
-class State:
-    """Save state of crawl to disk
-
-    output_file:
-        where to save the state
-    timeout:
-        how many seconds to wait between saving the state
-    """
-    def __init__(self, output_file=None, timeout=10):
-        # where to save state to
-        self.output_file = output_file or settings.status_file
-        # how long to wait between saving state
-        self.timeout = timeout
-        # track the number of downloads and errors
-        self.num_downloads = self.num_errors = self.num_caches = self.queue_size = 0
-        # data to save to disk
-        self.data = {}
-        # whether data needs to be saved to dosk
-        self.flush = False
-        # track time duration of crawl
-        self.start_time = time.time()
-        self.last_time = 0
-        # a lock to prevent multiple threads writing at once
-        self.lock = threading.Lock()
-
-    def update(self, num_downloads=0, num_errors=0, num_caches=0, queue_size=0):
-        """Update the state with these values
-
-        num_downloads:
-            the number of downloads completed successfully
-        num_errors:
-            the number of errors encountered while downloading
-        num_caches:
-            the number of webpages read from cache instead of downloading
-        queue_size:
-            the number of URL's in the queue
-        """
-        self.num_downloads += num_downloads
-        self.num_errors += num_errors
-        self.num_caches += num_caches
-        self.queue_size = queue_size
-        self.data['num_downloads'] = self.num_downloads
-        self.data['num_errors'] = self.num_errors
-        self.data['num_caches'] = self.num_caches
-        self.data['queue_size'] = self.queue_size
-
-        if time.time() - self.last_time > self.timeout:
-            self.lock.acquire()
-            self.save()
-            self.lock.release()
-
-    def save(self):
-        """Save state to disk
-        """
-        self.last_time = time.time()
-        self.data['duration_secs'] = int(self.last_time - self.start_time)
-        self.flush = False
-        text = json.dumps(self.data)
-        tmp_file = '%s.%d' % (self.output_file, os.getpid())
-        fp = open(tmp_file, 'wb')
-        fp.write(text)
-        # ensure all content is written to disk
-        fp.flush()
-        fp.close()
-        try:
-            if os.name == 'nt': 
-                # on windows can not rename if file exists
-                if os.path.exists(self.output_file):
-                    os.remove(self.output_file)
-            # atomic copy to new location so state file is never partially written
-            os.rename(tmp_file, self.output_file)
-        except OSError:
-            pass
 
 
 

@@ -1,10 +1,8 @@
 # coding: utf-8
 __doc__ = 'High level functions for interpreting useful data from input'
 
-import os
 import re
 import math
-import logging
 import random
 import common
 
@@ -58,12 +56,7 @@ def extract_phones(html):
     []
     """
     phones = []
-    try:
-        matches = re.findall('[\d\-\+ \.\(\)]+', html)
-    except TypeError:
-        matches = []
     if html:
-        #for match in matches:
         for match in re.findall('[\d\-\+ \.\(\)]+', html):
             digits = ''.join([c for c in match if c.isdigit()])
             if 9 <= len(digits) <= 11:
