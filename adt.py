@@ -1,8 +1,7 @@
 # coding: utf-8
 __doc__ = 'High level abstract datatypes'
 
-from datetime import datetime, timedelta
-from collections import defaultdict, deque
+from collections import defaultdict
 
 
 class Bag(dict):

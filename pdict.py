@@ -244,10 +244,10 @@ class MongoCache:
         a timedelta object of how old data can be before expires. By default is set to None to disable.
     """
     
-    def __init__(self, database_name, collection_name, host='127.0.0.1', port=27017, username=None, password=None, expires=None):
+    def __init__(self, database_name=None, collection_name=None, host='127.0.0.1', port=27017, username=None, password=None, conn=None, expires=None):
         self.host, self.port, self.username, self.password, self.database_name, self.collection_name = host, port, username, password, database_name, collection_name
         self.expires = expires
-        self.conn = None
+        self.conn = conn
         
     def get_connection(self):
         """Connect to MongoDB
@@ -411,9 +411,9 @@ class MongoCache:
 class MongoQueue:
     """MongoDB based queue
     """
-    def __init__(self, database_name, collection_name, host='127.0.0.1', port=27017, username=None, password=None):
+    def __init__(self, database_name=None, collection_name=None, host='127.0.0.1', port=27017, username=None, password=None, conn=None):
         self.host, self.port, self.username, self.password, self.database_name, self.collection_name = host, port, username, password, database_name, collection_name
-        self.conn = None
+        self.conn = conn
         
     def get_connection(self):
         """Connect to MongoDB
