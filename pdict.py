@@ -414,6 +414,8 @@ class MongoQueue:
     def __init__(self, database_name=None, collection_name=None, host='127.0.0.1', port=27017, username=None, password=None, conn=None):
         self.host, self.port, self.username, self.password, self.database_name, self.collection_name = host, port, username, password, database_name, collection_name
         self.conn = conn
+        if conn:
+            conn.ensure_index([('priority', pymongo.DESCENDING)])
         
     def get_connection(self):
         """Connect to MongoDB
@@ -426,7 +428,7 @@ class MongoQueue:
                     if self.username:
                         db.authenticate(name=self.username, password=self.password)
                     self.conn = db[self.collection_name]
-                    self.conn.ensure_index([('priority', pymongo.DESCENDING)])                    
+                    self.conn.ensure_index([('priority', pymongo.DESCENDING)])                
                 except Exception, e:
                     print 'Failed to connect to MongoDB: {}'.format(str(e))
                     time.sleep(1)
