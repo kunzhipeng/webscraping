@@ -95,7 +95,7 @@ def start_frida_server(serialno=None, restart=False, forward_port=True, frida_pa
 
 
 
-def inject_script(package, scriptcode, serialno=None, on_message_fun=None, restart=False, remote_connect=False):
+def inject_script(package, scriptcode, serialno=None, frida_host_port=None, on_message_fun=None, restart=False, remote_connect=False):
     """Inject instrumentation code into destination app process
     
     package:
@@ -103,7 +103,9 @@ def inject_script(package, scriptcode, serialno=None, on_message_fun=None, resta
     scriptcode:
         the javascript code to be injected;
     serialno:
-        the device serialno;        
+        the device serialno;
+     frida_host_port:
+        the host and port of frida server;
     on_message_fun:
         callback function to process the script messages;
     restart:
@@ -115,24 +117,24 @@ def inject_script(package, scriptcode, serialno=None, on_message_fun=None, resta
     if serialno:
         adb_cmd_prefix = 'adb -s "{}" '.format(serialno)
     device = None
-    if serialno:
-        if ':' in serialno:
-            if remote_connect:
-                # remote connect the frida server
-                frida_server_ip_port = re.sub(r'\:\d+', '', serialno).strip() + ':27042'
-                common.logger.info(u'Remote connect to the frida server "{}"'.format(frida_server_ip_port))            
-                device = frida.get_device_manager().add_remote_device(frida_server_ip_port)
-            else:
+    if not frida_host_port:
+        if serialno and ':' in serialno and remote_connect:
+            frida_host_port = re.sub(r'\:\d+', '', serialno).strip() + ':27042'
+    if frida_host_port:
+        common.logger.info(u'Remote connect to the frida server "{}"'.format(frida_host_port))            
+        device = frida.get_device_manager().add_remote_device(frida_host_port)
+
+    if not device:
+        if serialno:
+            if ':' in serialno:
                 device = None
                 for _device in frida.enumerate_devices():
                     if _device.id == serialno:
                         device = _device
                         break
-                if not device:
-                    device = frida.get_remote_device()
-        else:
-            device = frida.get_usb_device()
-    else:
+            else:
+                device = frida.get_usb_device()
+    if not device:
         device = frida.get_remote_device()    
 
     if not device:
@@ -175,14 +177,16 @@ def inject_script(package, scriptcode, serialno=None, on_message_fun=None, resta
 
 class FridaClient:
     
-    def __init__(self, package, scriptcode, serialno=None, on_message_fun=None, restart_frida=False, restart_app=False, forward_port=True, remote_connect=False, inject_oninit=True, frida_path='/data/local/tmp/frida'):
+    def __init__(self, package, scriptcode, serialno=None, frida_host_port=None, on_message_fun=None, restart_frida=False, restart_app=False, forward_port=True, remote_connect=False, inject_oninit=True, frida_path='/data/local/tmp/frida'):
         """
         package:
             app package name;
         scriptcode:
             the javascript code to be injected;
         serialno:
-            the device serialno;        
+            the device serialno;
+        frida_host_port:
+            the host and port of frida server;
         on_message_fun:
             callback function to process the script messages; 
         restart_frida:
@@ -199,6 +203,7 @@ class FridaClient:
             the path of the frida server bin file;            
         """
         self.serialno = serialno
+        self.frida_host_port = frida_host_port
         self.package = package
         self.scriptcode = scriptcode
         self.on_message_fun = on_message_fun
@@ -216,7 +221,7 @@ class FridaClient:
         """Do frida inject and return script object
         """
         start_frida_server(serialno=self.serialno, restart=self.restart_frida, forward_port=self.forward_port, frida_path=self.frida_path)
-        self.script = inject_script(package=self.package, scriptcode=self.scriptcode, serialno=self.serialno, on_message_fun=self.on_message_fun, restart=self.restart_app, remote_connect=self.remote_connect)
+        self.script = inject_script(package=self.package, scriptcode=self.scriptcode, serialno=self.serialno, frida_host_port=self.frida_host_port, on_message_fun=self.on_message_fun, restart=self.restart_app, remote_connect=self.remote_connect)
         
     def callrpc(self, method, args=None, timeout=5, num_retries=3):
         """Call Frida RPC method and return result

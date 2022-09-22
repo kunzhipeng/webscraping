@@ -192,7 +192,6 @@ class Download:
                 if not html and settings.num_retries >= 0:
                     # try downloading again
                     self.logger.debug('Redownloading')
-                    settings.num_retries -= 1
                 else:
                     # return previously downloaded content
                     return html or settings.default 
