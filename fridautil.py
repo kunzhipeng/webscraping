@@ -72,13 +72,12 @@ def start_frida_server(serialno=None, restart=False, forward_port=True, frida_pa
     cmd_ret = common.command(adb_cmd_prefix + ' shell ps')
     if os.path.basename(frida_path) not in cmd_ret:
         common.logger.info(u'The frida server is not running, will start it...')
-        def run_frida_server():
-            common.command(adb_cmd_prefix + ' shell "su -c \'chmod 777 {}\'"'.format(frida_path))
-            os.system(adb_cmd_prefix + ' shell "su -c \'.{} -l 0.0.0.0\'"'.format(frida_path))
-        thread = threading.Thread(target=run_frida_server)
-        thread.setDaemon(True)
-        thread.start()
-        time.sleep(2)
+        start_frida_shfile_path = '/data/local/tmp/start_frida.sh'
+        start_frida_shfile_content = 'nohup {} -l 0.0.0.0 >> /data/local/tmp/frida.log 2>&1 &\\nsleep 3'.format(frida_path)
+        common.command(adb_cmd_prefix + ' shell "echo \'{}\'|su -c \'tee {}\'"'.format(start_frida_shfile_content, start_frida_shfile_path))
+        common.command(adb_cmd_prefix + ' shell "su -c \'chmod 777 {}\'"'.format(frida_path))
+        common.command(adb_cmd_prefix + ' shell "su -c \'chmod 777 {}\'"'.format(start_frida_shfile_path))
+        common.command(adb_cmd_prefix + ' shell "su -c /data/local/tmp/start_frida.sh"'.format(frida_path))
         if os.path.basename(frida_path) in common.command(adb_cmd_prefix + ' shell ps'):
             common.logger.info(u'Frida server is runing.')
         else:
