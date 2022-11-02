@@ -4,11 +4,20 @@ __doc__ = 'Helper methods to do frida Adnroid DBI'
 import os
 import time
 import re
-import threading
+import socket
 # https://pypi.org/project/frida/
 import frida
 import func_timeout
 import common
+from contextlib import closing
+
+def find_free_port():
+    """pick a free port number
+    """
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+        s.bind(('', 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
 
 class FridaServerFileNotFound(Exception):
     """Exception for can not find the frida server bin file
@@ -26,7 +35,7 @@ class FridaNoDeviceMatched(Exception):
     pass
 
 
-def start_frida_server(serialno=None, restart=False, forward_port=True, frida_path='/data/local/tmp/frida'):
+def start_frida_server(serialno=None, restart=False, forward_port=True, frida_local_port=27042, frida_path='/data/local/tmp/frida'):
     """Start the frida server backend
         
     serialno:
@@ -35,6 +44,8 @@ def start_frida_server(serialno=None, restart=False, forward_port=True, frida_pa
         whether to restart the frida backend;
     forward_port:
         whether to forward the frida port;
+    frida_local_port:
+        will forward this local port to remote frida port 27042;
     frida_path:
         the path of the frida server bin file;
     """
@@ -88,8 +99,7 @@ def start_frida_server(serialno=None, restart=False, forward_port=True, frida_pa
 
     if forward_port:
         # do port forwarding for frida server
-        common.command(adb_cmd_prefix + ' forward tcp:27042 tcp:27042')
-        common.command(adb_cmd_prefix + ' forward tcp:27043 tcp:27043')
+        common.command(adb_cmd_prefix + ' forward tcp:{} tcp:27042'.format(frida_local_port))
     return True
 
 
@@ -176,7 +186,7 @@ def inject_script(package, scriptcode, serialno=None, frida_host_port=None, on_m
 
 class FridaClient:
     
-    def __init__(self, package, scriptcode, serialno=None, frida_host_port=None, on_message_fun=None, restart_frida=False, restart_app=False, forward_port=True, remote_connect=False, inject_oninit=True, frida_path='/data/local/tmp/frida'):
+    def __init__(self, package, scriptcode, serialno=None, frida_host_port=None, frida_local_port=27042, on_message_fun=None, restart_frida=False, restart_app=False, forward_port=True, remote_connect=False, inject_oninit=True, frida_path='/data/local/tmp/frida'):
         """
         package:
             app package name;
@@ -185,7 +195,9 @@ class FridaClient:
         serialno:
             the device serialno;
         frida_host_port:
-            the host and port of frida server;
+            the host and port of remote frida server;
+        frida_local_port:
+            will forward this local port to remote frida port 27042;
         on_message_fun:
             callback function to process the script messages; 
         restart_frida:
@@ -201,8 +213,11 @@ class FridaClient:
         frida_path:
             the path of the frida server bin file;            
         """
+        if frida_host_port or remote_connect:
+            forward_port = False
         self.serialno = serialno
         self.frida_host_port = frida_host_port
+        self.frida_local_port = frida_local_port
         self.package = package
         self.scriptcode = scriptcode
         self.on_message_fun = on_message_fun
@@ -219,8 +234,11 @@ class FridaClient:
     def inject(self):
         """Do frida inject and return script object
         """
-        start_frida_server(serialno=self.serialno, restart=self.restart_frida, forward_port=self.forward_port, frida_path=self.frida_path)
-        self.script = inject_script(package=self.package, scriptcode=self.scriptcode, serialno=self.serialno, frida_host_port=self.frida_host_port, on_message_fun=self.on_message_fun, restart=self.restart_app, remote_connect=self.remote_connect)
+        start_frida_server(serialno=self.serialno, restart=self.restart_frida, forward_port=self.forward_port, frida_local_port=self.frida_local_port, frida_path=self.frida_path)
+        frida_host_port = self.frida_host_port
+        if not frida_host_port and not self.remote_connect:
+            frida_host_port = '127.0.0.1:{}'.format(self.frida_local_port)
+        self.script = inject_script(package=self.package, scriptcode=self.scriptcode, serialno=self.serialno, frida_host_port=frida_host_port, on_message_fun=self.on_message_fun, restart=self.restart_app, remote_connect=self.remote_connect)
         
     def callrpc(self, method, args=None, timeout=5, num_retries=3):
         """Call Frida RPC method and return result
